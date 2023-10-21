@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 	_ "image/png"
 	"net/http"
@@ -27,13 +29,28 @@ func zoomAndCrop(img image.Image, zoom float64) image.Image {
 	newSize := uint(float64(img.Bounds().Dx()) * zoom)
 	newImg := resize.Resize(newSize, 0, img, resize.Lanczos3)
 
-	deltaX := (newImg.Bounds().Dx() - img.Bounds().Dx()) / 2
-	deltaY := (newImg.Bounds().Dy() - img.Bounds().Dy()) / 2
+	if zoom < 1 {
+		// Create a new image with the original size and fill it with white color
+		paddedImg := image.NewRGBA(img.Bounds())
+		draw.Draw(paddedImg, paddedImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
-	croppedRect := image.Rect(deltaX, deltaY, newImg.Bounds().Dx()-deltaX, newImg.Bounds().Dy()-deltaY)
-	return newImg.(interface {
-		SubImage(r image.Rectangle) image.Image
-	}).SubImage(croppedRect)
+		// Calculate the position to draw the new image onto the center of the padded image
+		deltaX := (paddedImg.Bounds().Dx() - newImg.Bounds().Dx()) / 2
+		deltaY := (paddedImg.Bounds().Dy() - newImg.Bounds().Dy()) / 2
+		rect := image.Rect(deltaX, deltaY, deltaX+newImg.Bounds().Dx(), deltaY+newImg.Bounds().Dy())
+
+		// Draw the new image onto the padded image
+		draw.Draw(paddedImg, rect, newImg, image.Point{}, draw.Src)
+		return paddedImg
+	} else {
+		deltaX := (newImg.Bounds().Dx() - img.Bounds().Dx()) / 2
+		deltaY := (newImg.Bounds().Dy() - img.Bounds().Dy()) / 2
+
+		croppedRect := image.Rect(deltaX, deltaY, newImg.Bounds().Dx()-deltaX, newImg.Bounds().Dy()-deltaY)
+		return newImg.(interface {
+			SubImage(r image.Rectangle) image.Image
+		}).SubImage(croppedRect)
+	}
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
