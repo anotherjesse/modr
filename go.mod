@@ -2,4 +2,4 @@ module github.com/anotherjesse/modr
 
 go 1.21.0
 
-require github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
+require gopkg.in/gographics/imagick.v3 v3.5.0

@@ -3,54 +3,28 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"image"
-	"image/color"
-	"image/draw"
-	"image/jpeg"
-	_ "image/png"
+	"io"
 	"net/http"
 	"strconv"
 
-	"github.com/nfnt/resize"
+	imagick "gopkg.in/gographics/imagick.v3/imagick"
 )
 
-func downloadImage(url string) (image.Image, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+func zoomImage(mw *imagick.MagickWand, zoom float64) error {
 
-	img, _, err := image.Decode(resp.Body)
-	return img, err
-}
+	// Perform the zoom and crop
+	width := mw.GetImageWidth()
+	height := mw.GetImageHeight()
+	newWidth := uint(float64(width) * zoom)
+	newHeight := uint(float64(height) * zoom)
 
-func zoomAndCrop(img image.Image, zoom float64) image.Image {
-	newSize := uint(float64(img.Bounds().Dx()) * zoom)
-	newImg := resize.Resize(newSize, 0, img, resize.Lanczos3)
+	// Resize
+	mw.ResizeImage(newWidth, newHeight, imagick.FILTER_LANCZOS)
 
-	if zoom < 1 {
-		// Create a new image with the original size and fill it with white color
-		paddedImg := image.NewRGBA(img.Bounds())
-		draw.Draw(paddedImg, paddedImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
-
-		// Calculate the position to draw the new image onto the center of the padded image
-		deltaX := (paddedImg.Bounds().Dx() - newImg.Bounds().Dx()) / 2
-		deltaY := (paddedImg.Bounds().Dy() - newImg.Bounds().Dy()) / 2
-		rect := image.Rect(deltaX, deltaY, deltaX+newImg.Bounds().Dx(), deltaY+newImg.Bounds().Dy())
-
-		// Draw the new image onto the padded image
-		draw.Draw(paddedImg, rect, newImg, image.Point{}, draw.Src)
-		return paddedImg
-	} else {
-		deltaX := (newImg.Bounds().Dx() - img.Bounds().Dx()) / 2
-		deltaY := (newImg.Bounds().Dy() - img.Bounds().Dy()) / 2
-
-		croppedRect := image.Rect(deltaX, deltaY, newImg.Bounds().Dx()-deltaX, newImg.Bounds().Dy()-deltaY)
-		return newImg.(interface {
-			SubImage(r image.Rectangle) image.Image
-		}).SubImage(croppedRect)
-	}
+	// Crop
+	x := (newWidth - width) / 2
+	y := (newHeight - height) / 2
+	return mw.CropImage(width, height, int(x), int(y))
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -62,34 +36,70 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url, err := base64.StdEncoding.DecodeString(encURL)
+	url_bytes, err := base64.StdEncoding.DecodeString(encURL)
+	url := string(url_bytes)
+
 	if err != nil {
 		http.Error(w, "Invalid base64 encoded url", http.StatusBadRequest)
 		return
 	}
 
-	zoom, err := strconv.ParseFloat(zoomStr, 64)
-	if err != nil || zoom <= 0 {
-		http.Error(w, "Invalid zoom value", http.StatusBadRequest)
-		return
-	}
-
-	fmt.Printf("Downloading %s with zoom %f\n", url, zoom)
-
-	img, err := downloadImage(string(url))
+	fmt.Println("Downloading image from", url)
+	resp, err := http.Get(url)
 	if err != nil {
-		fmt.Println(err)
 		http.Error(w, "Failed to download image", http.StatusInternalServerError)
 		return
 	}
+	defer resp.Body.Close()
 
-	zoomedImg := zoomAndCrop(img, zoom)
+	// Read the body data to byte slice
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Failed to read image data", http.StatusInternalServerError)
+		return
+	}
 
-	w.Header().Set("Content-Type", "image/jpeg")
-	jpeg.Encode(w, zoomedImg, nil)
+	fmt.Println("Downloaded", len(data), "bytes")
+
+	mw := imagick.NewMagickWand()
+	defer mw.Destroy()
+
+	// Read the image from the byte slice
+	if err := mw.ReadImageBlob(data); err != nil {
+		http.Error(w, "Failed to read image data", http.StatusInternalServerError)
+		return
+	}
+
+	if zoomStr != "" {
+
+		zoom, err := strconv.ParseFloat(zoomStr, 64)
+		if err != nil || zoom <= 0 {
+			http.Error(w, "Invalid zoom value", http.StatusBadRequest)
+			return
+		}
+
+		err = zoomImage(mw, zoom)
+		if err != nil {
+			http.Error(w, "Failed to download or process image", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	content := mw.GetImageBlob()
+
+	if content != nil {
+		w.Header().Set("Content-Type", "image/jpeg")
+		fmt.Println("Content length:", len(content))
+		w.Write(content)
+	} else {
+		http.Error(w, "No content", http.StatusInternalServerError)
+	}
 }
 
 func main() {
+	imagick.Initialize()
+	defer imagick.Terminate()
+
 	http.HandleFunc("/", handler)
 	fmt.Println("Starting server on :8080")
 	http.ListenAndServe(":8080", nil)
